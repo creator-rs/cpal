@@ -151,6 +151,8 @@ extern crate lazy_static;
 #[macro_use]
 extern crate stdweb;
 extern crate thiserror;
+extern crate coreaudio;
+extern crate core_foundation_sys;
 
 pub use error::*;
 pub use platform::{
@@ -189,7 +191,7 @@ pub type FrameCount = u32;
 /// behavior of the given host. Note, the default buffer size may be surprisingly
 /// large, leading to latency issues. If low latency is desired, Fixed(BufferSize)
 /// should be used in accordance with the SupportedBufferSize range produced by
-/// the SupportedStreamConfig API.  
+/// the SupportedStreamConfig API.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BufferSize {
     Default,

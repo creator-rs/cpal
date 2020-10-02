@@ -13,7 +13,7 @@ extern crate ringbuf;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::RingBuffer;
 
-const LATENCY_MS: f32 = 150.0;
+const LATENCY_MS: f32 = 1000.0;
 
 fn main() -> Result<(), anyhow::Error> {
     let host = cpal::default_host();
@@ -29,7 +29,8 @@ fn main() -> Result<(), anyhow::Error> {
     println!("Using default output device: \"{}\"", output_device.name()?);
 
     // We'll try and use the same configuration between streams to keep it simple.
-    let config: cpal::StreamConfig = input_device.default_input_config()?.into();
+    let mut config: cpal::StreamConfig = input_device.default_input_config()?.into();
+    config.channels = 1;
 
     // Create a delay in case the input and output devices aren't synced.
     let latency_frames = (LATENCY_MS / 1_000.0) * config.sample_rate.0 as f32;

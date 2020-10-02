@@ -1,4 +1,4 @@
-use super::coreaudio::sys::{
+use coreaudio::sys::{
     kAudioHardwareNoError, kAudioHardwarePropertyDefaultInputDevice,
     kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDevices,
     kAudioObjectPropertyElementMaster, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
