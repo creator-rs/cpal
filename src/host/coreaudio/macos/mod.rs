@@ -8,7 +8,6 @@ use coreaudio::sys::{
     kAudioDevicePropertyBufferFrameSizeRange, kAudioDevicePropertyDeviceNameCFString,
     kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyScopeOutput,
     kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyStreamFormat,
-    kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked, kAudioFormatLinearPCM,
     kAudioObjectPropertyElementMaster, kAudioObjectPropertyScopeGlobal,
     kAudioObjectPropertyScopeInput, kAudioObjectPropertyScopeOutput,
     kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO,
@@ -36,12 +35,14 @@ use std::slice;
 use std::thread;
 use std::time::Duration;
 
-pub use super::enumerate_macos::{
+pub use self::enumerate::{
     default_input_device, default_output_device, Devices, SupportedInputConfigs,
     SupportedOutputConfigs,
 };
 
-/// Coreaudio host, the default host on macOS and iOS.
+pub mod enumerate;
+
+/// Coreaudio host, the default host on macOS.
 #[derive(Debug)]
 pub struct Host;
 
@@ -56,7 +57,7 @@ impl HostTrait for Host {
     type Device = Device;
 
     fn is_available() -> bool {
-        // Assume coreaudio is always available on macOS and iOS.
+        // Assume coreaudio is always available
         true
     }
 
@@ -239,13 +240,9 @@ impl Device {
                 n_channels += buffer.mNumberChannels as usize;
             }
 
-            // AFAIK the sample format should always be f32 on macos and i16 on iOS? Feel free to
-            // fix this if more pcm formats are supported.
-            let sample_format = if cfg!(target_os = "ios") {
-                SampleFormat::I16
-            } else {
-                SampleFormat::F32
-            };
+            // TODO: macOS should support U8, I16, I32, F32 and F64. This should allow for using
+            // I16 but just use F32 for now as its the default anyway.
+            let sample_format = SampleFormat::F32;
 
             // Get available sample rate ranges.
             property_address.mSelector = kAudioDevicePropertyAvailableNominalSampleRates;
@@ -452,17 +449,7 @@ impl From<coreaudio::Error> for DefaultStreamConfigError {
 }
 
 fn audio_unit_from_device(device: &Device, input: bool) -> Result<AudioUnit, coreaudio::Error> {
-    let mut audio_unit = {
-        let au_type = if cfg!(target_os = "ios") {
-            // The HalOutput unit isn't available in iOS unfortunately.
-            // RemoteIO is a sensible replacement.
-            // See https://goo.gl/CWwRTx
-            coreaudio::audio_unit::IOType::RemoteIO
-        } else {
-            coreaudio::audio_unit::IOType::HalOutput
-        };
-        AudioUnit::new(au_type)?
-    };
+    let mut audio_unit = AudioUnit::new(coreaudio::audio_unit::IOType::HalOutput)?;
 
     if input {
         // Enable input processing.

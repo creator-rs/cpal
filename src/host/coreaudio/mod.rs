@@ -6,23 +6,18 @@ use coreaudio::sys::{
 use crate::{BackendSpecificError, SampleFormat, StreamConfig};
 
 #[cfg(target_os = "macos")]
-mod enumerate_macos;
+mod macos;
 #[cfg(target_os = "macos")]
-mod coreaudio_macos;
+pub use self::macos::enumerate::{Devices, SupportedInputConfigs, SupportedOutputConfigs};
 #[cfg(target_os = "macos")]
-pub use self::enumerate_macos::{Devices, SupportedInputConfigs, SupportedOutputConfigs};
-#[cfg(target_os = "macos")]
-pub use self::coreaudio_macos::{Device, Host, Stream};
+pub use self::macos::{Device, Host, Stream};
 
 #[cfg(target_os = "ios")]
-mod enumerate_ios;
+mod ios;
 #[cfg(target_os = "ios")]
-mod coreaudio_ios;
+pub use self::ios::enumerate::{Devices, SupportedInputConfigs, SupportedOutputConfigs};
 #[cfg(target_os = "ios")]
-#[cfg(target_os = "ios")]
-pub use self::enumerate_ios::{Devices, SupportedInputConfigs, SupportedOutputConfigs};
-#[cfg(target_os = "ios")]
-pub use self::coreaudio_ios::{Device, Host, Stream};
+pub use self::ios::{Device, Host, Stream};
 
 
 /// Common helper methods used by both macOS and iOS

@@ -1,6 +1,3 @@
-extern crate core_foundation_sys;
-extern crate coreaudio;
-
 use std::cell::RefCell;
 use std::ops::DerefMut;
 use std::ptr::null_mut;
@@ -37,6 +34,8 @@ use self::coreaudio::sys::{
     OSStatus,
 
 };
+
+pub mod enumerate;
 
 pub struct Devices;
 
