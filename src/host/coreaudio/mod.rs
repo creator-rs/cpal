@@ -18,6 +18,8 @@ mod ios;
 pub use self::ios::enumerate::{Devices, SupportedInputConfigs, SupportedOutputConfigs};
 #[cfg(target_os = "ios")]
 pub use self::ios::{Device, Host, Stream};
+use ::{BuildStreamError, SupportedStreamConfigsError};
+use DefaultStreamConfigError;
 
 
 /// Common helper methods used by both macOS and iOS
@@ -81,4 +83,36 @@ fn frames_to_duration(frames: usize, rate: crate::SampleRate) -> std::time::Dura
     let secs = secsf as u64;
     let nanos = ((secsf - secs as f64) * 1_000_000_000.0) as u32;
     std::time::Duration::new(secs, nanos)
+}
+
+// TODO need stronger error identification
+impl From<coreaudio::Error> for BuildStreamError {
+    fn from(err: coreaudio::Error) -> BuildStreamError {
+        match err {
+            coreaudio::Error::RenderCallbackBufferFormatDoesNotMatchAudioUnitStreamFormat
+            | coreaudio::Error::NoKnownSubtype
+            | coreaudio::Error::AudioUnit(coreaudio::error::AudioUnitError::FormatNotSupported)
+            | coreaudio::Error::AudioCodec(_)
+            | coreaudio::Error::AudioFormat(_) => BuildStreamError::StreamConfigNotSupported,
+            _ => BuildStreamError::DeviceNotAvailable,
+        }
+    }
+}
+
+impl From<coreaudio::Error> for SupportedStreamConfigsError {
+    fn from(err: coreaudio::Error) -> SupportedStreamConfigsError {
+        let description = format!("{}", err);
+        let err = BackendSpecificError { description };
+        // Check for possible DeviceNotAvailable variant
+        SupportedStreamConfigsError::BackendSpecific { err }
+    }
+}
+
+impl From<coreaudio::Error> for DefaultStreamConfigError {
+    fn from(err: coreaudio::Error) -> DefaultStreamConfigError {
+        let description = format!("{}", err);
+        let err = BackendSpecificError { description };
+        // Check for possible DeviceNotAvailable variant
+        DefaultStreamConfigError::BackendSpecific { err }
+    }
 }

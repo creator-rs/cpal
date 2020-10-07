@@ -1,4 +1,4 @@
-use super::{asbd_from_config, host_time_to_stream_instant, frames_to_duration};
+use super::{asbd_from_config, host_time_to_stream_instant, frames_to_duration, check_os_status};
 
 use core_foundation_sys::string::{CFStringGetCString, CFStringGetCStringPtr, CFStringRef};
 use coreaudio::audio_unit::render_callback::{self, data};
@@ -416,38 +416,6 @@ struct StreamInner {
     device_id: AudioDeviceID,
 }
 
-// TODO need stronger error identification
-impl From<coreaudio::Error> for BuildStreamError {
-    fn from(err: coreaudio::Error) -> BuildStreamError {
-        match err {
-            coreaudio::Error::RenderCallbackBufferFormatDoesNotMatchAudioUnitStreamFormat
-            | coreaudio::Error::NoKnownSubtype
-            | coreaudio::Error::AudioUnit(coreaudio::error::AudioUnitError::FormatNotSupported)
-            | coreaudio::Error::AudioCodec(_)
-            | coreaudio::Error::AudioFormat(_) => BuildStreamError::StreamConfigNotSupported,
-            _ => BuildStreamError::DeviceNotAvailable,
-        }
-    }
-}
-
-impl From<coreaudio::Error> for SupportedStreamConfigsError {
-    fn from(err: coreaudio::Error) -> SupportedStreamConfigsError {
-        let description = format!("{}", err);
-        let err = BackendSpecificError { description };
-        // Check for possible DeviceNotAvailable variant
-        SupportedStreamConfigsError::BackendSpecific { err }
-    }
-}
-
-impl From<coreaudio::Error> for DefaultStreamConfigError {
-    fn from(err: coreaudio::Error) -> DefaultStreamConfigError {
-        let description = format!("{}", err);
-        let err = BackendSpecificError { description };
-        // Check for possible DeviceNotAvailable variant
-        DefaultStreamConfigError::BackendSpecific { err }
-    }
-}
-
 fn audio_unit_from_device(device: &Device, input: bool) -> Result<AudioUnit, coreaudio::Error> {
     let mut audio_unit = AudioUnit::new(coreaudio::audio_unit::IOType::HalOutput)?;
 
@@ -844,16 +812,6 @@ impl StreamTrait for Stream {
             stream.playing = false;
         }
         Ok(())
-    }
-}
-
-fn check_os_status(os_status: OSStatus) -> Result<(), BackendSpecificError> {
-    match coreaudio::Error::from_os_status(os_status) {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            let description = err.to_string();
-            Err(BackendSpecificError { description })
-        }
     }
 }
 

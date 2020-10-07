@@ -3,6 +3,18 @@ use std::ops::DerefMut;
 use std::ptr::null_mut;
 use std::sync::{Arc, Mutex, RwLock};
 
+use coreaudio::audio_unit::{AudioUnit, Element, render_callback, Scope};
+use coreaudio::audio_unit::render_callback::data;
+use coreaudio::sys::{
+    AudioBuffer,
+    AudioStreamBasicDescription,
+    kAudioOutputUnitProperty_EnableIO,
+    kAudioUnitProperty_StreamFormat,
+    kAudioUnitType_Output,
+    OSStatus,
+};
+
+use host::coreaudio::{asbd_from_config, host_time_to_stream_instant, frames_to_duration};
 use traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::{
@@ -12,40 +24,12 @@ use crate::{
     SupportedStreamConfig, SupportedStreamConfigRange, SupportedStreamConfigsError,
 };
 
-use self::coreaudio::audio_unit::{AudioUnit, Element, render_callback, Scope};
-use self::coreaudio::audio_unit::render_callback::data;
-use self::coreaudio::sys::{
-    AudioBuffer,
-    AudioComponent,
-    AudioComponentDescription,
-    AudioComponentFindNext,
-    AudioComponentInstance,
-    AudioComponentInstanceNew,
-    AudioStreamBasicDescription,
-    AudioUnitInitialize,
-    AudioValueRange,
-    kAudioFormatFlagIsFloat,
-    kAudioFormatFlagIsPacked,
-    kAudioFormatLinearPCM,
-    kAudioUnitManufacturer_Apple,
-    kAudioUnitProperty_StreamFormat,
-    kAudioUnitSubType_RemoteIO,
-    kAudioUnitType_Output,
-    OSStatus,
-
+use self::enumerate::{
+    default_input_device, default_output_device,
+    Devices, SupportedInputConfigs, SupportedOutputConfigs
 };
 
 pub mod enumerate;
-
-pub struct Devices;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Device;
-
-pub struct Host;
-
-pub type SupportedInputConfigs = ::std::vec::IntoIter<SupportedStreamConfigRange>;
-pub type SupportedOutputConfigs = ::std::vec::IntoIter<SupportedStreamConfigRange>;
 
 const MIN_CHANNELS: u16 = 1;
 const MAX_CHANNELS: u16 = 2;
@@ -56,6 +40,12 @@ const MIN_BUFFER_SIZE: u32 = 512;
 const MAX_BUFFER_SIZE: u32 = 512;
 const DEFAULT_BUFFER_SIZE: usize = 512;
 const SUPPORTED_SAMPLE_FORMAT: SampleFormat = SampleFormat::F32;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Device;
+
+pub struct Host;
+
 
 impl Host {
     pub fn new() -> Result<Self, crate::HostUnavailable> {
@@ -84,24 +74,41 @@ impl HostTrait for Host {
     }
 }
 
-impl Devices {
-    fn new() -> Result<Self, DevicesError> {
-        Ok(Self::default())
-    }
-}
-
 impl Device {
     #[inline]
     fn name(&self) -> Result<String, DeviceNameError> {
-        Ok("Default Device".to_owned())
+        Ok("RemoteIO Device".to_owned())
     }
 
     #[inline]
     fn supported_input_configs(
         &self,
     ) -> Result<SupportedInputConfigs, SupportedStreamConfigsError> {
-        // TODO
-        Ok(Vec::new().into_iter())
+
+        // setup an audio unit for recording, and then pull some default parameters off it
+
+        let mut audio_unit = create_audio_unit()?;
+        audio_unit.uninitialize()?;
+        configure_for_recording(&mut audio_unit)?;
+        audio_unit.initialize()?;
+
+        let id = kAudioUnitProperty_StreamFormat;
+        let asbd: AudioStreamBasicDescription = audio_unit.get_property(id, Scope::Input, Element::Input)?;
+
+        let buffer_size = SupportedBufferSize::Range {
+            min: MIN_BUFFER_SIZE,
+            max: MAX_BUFFER_SIZE,
+        };
+
+        Ok(vec![
+            SupportedStreamConfigRange {
+                channels: asbd.mChannelsPerFrame as u16,
+                min_sample_rate: SampleRate(asbd.mSampleRate as u32),
+                max_sample_rate: SampleRate(asbd.mSampleRate as u32),
+                buffer_size: buffer_size.clone(),
+                sample_format: SUPPORTED_SAMPLE_FORMAT,
+            }
+        ].into_iter())
     }
 
     #[inline]
@@ -126,8 +133,15 @@ impl Device {
 
     #[inline]
     fn default_input_config(&self) -> Result<SupportedStreamConfig, DefaultStreamConfigError> {
-        // TODO
-        Err(DefaultStreamConfigError::StreamTypeNotSupported)
+        const EXPECT: &str = "expected at least one valid coreaudio stream config";
+        let config = self
+            .supported_input_configs()
+            .expect(EXPECT)
+            .max_by(|a, b| a.cmp_default_heuristics(b))
+            .unwrap()
+            .with_sample_rate(DEFAULT_SAMPLE_RATE);
+
+        Ok(config)
     }
 
     #[inline]
@@ -206,9 +220,9 @@ impl DeviceTrait for Device {
             E: FnMut(StreamError) + Send + 'static,
     {
         println!("build output stream raw");
-        if !valid_config(config, sample_format) {
-            return Err(BuildStreamError::StreamConfigNotSupported);
-        }
+        // if !valid_config(config, sample_format) {
+        //     return Err(BuildStreamError::StreamConfigNotSupported);
+        // }
 
         let n_channels = config.channels as usize;
 
@@ -224,21 +238,6 @@ impl DeviceTrait for Device {
         };
         // let buffer_size_samples = buffer_size_frames * n_channels;
         // let buffer_time_step_secs = buffer_time_step_secs(buffer_size_frames, config.sample_rate);
-
-        // let data_callback = Arc::new(Mutex::new(Box::new(data_callback)));
-
-        // let mut audio_unit = audio_unit_from_device(self, false)?;
-
-        // let desc = AudioComponentDescription {
-        //     componentType: kAudioUnitType_Output,
-        //     componentSubType: kAudioUnitSubType_RemoteIO,
-        //     componentManufacturer: kAudioUnitManufacturer_Apple,
-        //     componentFlags: 0,
-        //     componentFlagsMask: 0,
-        // };
-        //
-        // //  Next, we get the first (and only) component corresponding to that description
-        // let output_component: AudioComponent = AudioComponentFindNext(null_mut(), &desc);
 
         let au_type = coreaudio::audio_unit::IOType::RemoteIO;
         println!("new audio unit");
@@ -377,72 +376,36 @@ struct StreamInner {
     audio_unit: AudioUnit,
 }
 
-// TODO need stronger error identification
-impl From<coreaudio::Error> for BuildStreamError {
-    fn from(err: coreaudio::Error) -> BuildStreamError {
-        match err {
-            coreaudio::Error::RenderCallbackBufferFormatDoesNotMatchAudioUnitStreamFormat
-            | coreaudio::Error::NoKnownSubtype
-            | coreaudio::Error::AudioUnit(coreaudio::error::AudioUnitError::FormatNotSupported)
-            | coreaudio::Error::AudioCodec(_)
-            | coreaudio::Error::AudioFormat(_) => BuildStreamError::StreamConfigNotSupported,
-            _ => BuildStreamError::DeviceNotAvailable,
-        }
-    }
+
+// fn buffer_time_step_secs(buffer_size_frames: usize, sample_rate: SampleRate) -> f64 {
+//     buffer_size_frames as f64 / sample_rate.0 as f64
+// }
+
+
+fn create_audio_unit() -> Result<AudioUnit, coreaudio::Error>{
+    AudioUnit::new(coreaudio::audio_unit::IOType::RemoteIO)
 }
 
-impl From<coreaudio::Error> for SupportedStreamConfigsError {
-    fn from(err: coreaudio::Error) -> SupportedStreamConfigsError {
-        let description = format!("{}", err);
-        let err = BackendSpecificError { description };
-        // Check for possible DeviceNotAvailable variant
-        SupportedStreamConfigsError::BackendSpecific { err }
-    }
-}
+fn configure_for_recording(audio_unit: &mut AudioUnit) -> Result<(), coreaudio::Error> {
+    println!("Configure audio unit for recording");
 
-impl From<coreaudio::Error> for DefaultStreamConfigError {
-    fn from(err: coreaudio::Error) -> DefaultStreamConfigError {
-        let description = format!("{}", err);
-        let err = BackendSpecificError { description };
-        // Check for possible DeviceNotAvailable variant
-        DefaultStreamConfigError::BackendSpecific { err }
-    }
-}
+    // Enable mic recording
+    let enable_input = 1u32;
+    audio_unit.set_property(
+        kAudioOutputUnitProperty_EnableIO,
+        Scope::Input,
+        Element::Input,
+        Some(&enable_input),
+    )?;
 
-impl Default for Devices {
-    fn default() -> Devices {
-        Devices
-    }
-}
+    // Disable output
+    let disable_output = 0u32;
+    audio_unit.set_property(
+        kAudioOutputUnitProperty_EnableIO,
+        Scope::Output,
+        Element::Output,
+        Some(&disable_output),
+    )?;
 
-impl Iterator for Devices {
-    type Item = Device;
-    #[inline]
-    fn next(&mut self) -> Option<Device> {
-        Some(d)
-    }
-}
-
-#[inline]
-fn default_input_device() -> Option<Device> {
-    // TODO
-    None
-}
-
-#[inline]
-fn default_output_device() -> Option<Device> {
-    Some(Device)
-}
-
-// Whether or not the given stream configuration is valid for building a stream.
-fn valid_config(conf: &StreamConfig, sample_format: SampleFormat) -> bool {
-    conf.channels <= MAX_CHANNELS
-        && conf.channels >= MIN_CHANNELS
-        && conf.sample_rate <= MAX_SAMPLE_RATE
-        && conf.sample_rate >= MIN_SAMPLE_RATE
-        && sample_format == SUPPORTED_SAMPLE_FORMAT
-}
-
-fn buffer_time_step_secs(buffer_size_frames: usize, sample_rate: SampleRate) -> f64 {
-    buffer_size_frames as f64 / sample_rate.0 as f64
+    Ok(())
 }
