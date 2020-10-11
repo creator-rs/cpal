@@ -34,7 +34,8 @@ libc = "0.2.65"
 jack = { version = "0.6.5", optional = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-coreaudio-rs = { version = "0.9.1", default-features = false, features = ["audio_unit", "core_audio"] }
+#coreaudio-rs = { version = "0.9.1", default-features = false, features = ["audio_unit", "core_audio"] }
+coreaudio-rs = { git = "https://github.com/MichaelHills/coreaudio-rs", branch = "mike-ios-support" }
 core-foundation-sys = "0.6.2" # For linking to CoreFoundation.framework and handling device name `CFString`s.
 mach = "0.3" # For access to mach_timebase type.
 
