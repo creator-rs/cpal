@@ -117,7 +117,7 @@ impl Device {
 
         // setup an audio unit, and then pull some default parameters off it
 
-        let mut audio_unit = create_audio_unit()?;
+        let audio_unit = create_audio_unit()?;
         let id = kAudioUnitProperty_StreamFormat;
         let asbd: AudioStreamBasicDescription = audio_unit.get_property(id, Scope::Output, Element::Output)?;
 
