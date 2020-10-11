@@ -1,3 +1,10 @@
+//!
+//! coreaudio on iOS looks a bit different than on macOS. A lot of configuration needs to use
+//! the AVAudioSession objc API which doesn't exist on macOS.
+//!
+//! TODO:
+//! - Use AVAudioSession to enumerate (and set) buffer size / sample rate / number of channels
+//!
 use std::cell::RefCell;
 
 use coreaudio::audio_unit::{AudioUnit, Element, render_callback, Scope};
@@ -27,14 +34,9 @@ use std::slice;
 
 pub mod enumerate;
 
-const MIN_CHANNELS: u16 = 1;
-const MAX_CHANNELS: u16 = 2;
-const MIN_SAMPLE_RATE: SampleRate = SampleRate(44_100);
-const MAX_SAMPLE_RATE: SampleRate = SampleRate(44_100);
 const DEFAULT_SAMPLE_RATE: SampleRate = SampleRate(44_100);
-const MIN_BUFFER_SIZE: u32 = 0;
-const MAX_BUFFER_SIZE: u32 = 0;
-// const DEFAULT_BUFFER_SIZE: usize = 512;
+
+// These days the default of iOS is now F32 and no longer I16
 const SUPPORTED_SAMPLE_FORMAT: SampleFormat = SampleFormat::F32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,13 +75,15 @@ impl HostTrait for Host {
 impl Device {
     #[inline]
     fn name(&self) -> Result<String, DeviceNameError> {
-        Ok("RemoteIO Device".to_owned())
+        Ok("Default Device".to_owned())
     }
 
     #[inline]
     fn supported_input_configs(
         &self,
     ) -> Result<SupportedInputConfigs, SupportedStreamConfigsError> {
+        // TODO: query AVAudioSession for parameters, some values like sample rate and buffer size
+        // probably need to be tested but channels can be enumerated.
 
         // setup an audio unit for recording, and then pull some default parameters off it
 
@@ -91,10 +95,7 @@ impl Device {
         let id = kAudioUnitProperty_StreamFormat;
         let asbd: AudioStreamBasicDescription = audio_unit.get_property(id, Scope::Input, Element::Input)?;
 
-        let buffer_size = SupportedBufferSize::Range {
-            min: MIN_BUFFER_SIZE,
-            max: MAX_BUFFER_SIZE,
-        };
+        let buffer_size = SupportedBufferSize::Range { min: 0, max: 0 };
 
         Ok(vec![
             SupportedStreamConfigRange {
@@ -111,15 +112,21 @@ impl Device {
     fn supported_output_configs(
         &self,
     ) -> Result<SupportedOutputConfigs, SupportedStreamConfigsError> {
-        let buffer_size = SupportedBufferSize::Range {
-            min: MIN_BUFFER_SIZE,
-            max: MAX_BUFFER_SIZE,
-        };
-        let configs: Vec<_> = (MIN_CHANNELS..=MAX_CHANNELS)
+        // TODO: query AVAudioSession for parameters, some values like sample rate and buffer size
+        // probably need to be tested but channels can be enumerated.
+
+        // setup an audio unit, and then pull some default parameters off it
+
+        let mut audio_unit = create_audio_unit()?;
+        let id = kAudioUnitProperty_StreamFormat;
+        let asbd: AudioStreamBasicDescription = audio_unit.get_property(id, Scope::Output, Element::Output)?;
+
+        let buffer_size = SupportedBufferSize::Range { min: 0, max: 0 };
+        let configs: Vec<_> = (1..=asbd.mChannelsPerFrame as u16)
             .map(|channels| SupportedStreamConfigRange {
                 channels,
-                min_sample_rate: MIN_SAMPLE_RATE,
-                max_sample_rate: MAX_SAMPLE_RATE,
+                min_sample_rate: SampleRate(asbd.mSampleRate as u32),
+                max_sample_rate: SampleRate(asbd.mSampleRate as u32),
                 buffer_size: buffer_size.clone(),
                 sample_format: SUPPORTED_SAMPLE_FORMAT,
             })
@@ -203,9 +210,7 @@ impl DeviceTrait for Device {
         let scope = Scope::Output;
         let element = Element::Input;
 
-        let au_type = coreaudio::audio_unit::IOType::RemoteIO;
-        println!("new audio unit");
-        let mut audio_unit = AudioUnit::new(au_type)?;
+        let mut audio_unit = create_audio_unit()?;
         audio_unit.uninitialize()?;
         configure_for_recording(&mut audio_unit)?;
         audio_unit.initialize()?;
@@ -283,64 +288,23 @@ impl DeviceTrait for Device {
             D: FnMut(&mut Data, &OutputCallbackInfo) + Send + 'static,
             E: FnMut(StreamError) + Send + 'static,
     {
-        println!("build output stream raw");
-        // if !valid_config(config, sample_format) {
-        //     return Err(BuildStreamError::StreamConfigNotSupported);
-        // }
-
-        let n_channels = config.channels as usize;
-
         match config.buffer_size {
             BufferSize::Fixed(_) => {
                 return Err(BuildStreamError::StreamConfigNotSupported);
-                // if v == 0 {
-                //     return Err(BuildStreamError::StreamConfigNotSupported);
-                // } else {
-                //     v as usize
-                // }
             }
             BufferSize::Default => (),
         };
-        // let buffer_size_samples = buffer_size_frames * n_channels;
-        // let buffer_time_step_secs = buffer_time_step_secs(buffer_size_frames, config.sample_rate);
 
-        let au_type = coreaudio::audio_unit::IOType::RemoteIO;
-        println!("new audio unit");
-        let mut audio_unit = AudioUnit::new(au_type)?;
+        let mut audio_unit = create_audio_unit()?;
 
         // The scope and element for working with a device's output stream.
         let scope = Scope::Input;
         let element = Element::Output;
 
-        println!("asbd");
         // Set the stream in interleaved mode.
         let asbd = asbd_from_config(config, sample_format);
         audio_unit.set_property(kAudioUnitProperty_StreamFormat, scope, element, Some(&asbd))?;
 
-        // Set the buffersize
-        // match config.buffer_size {
-        //     BufferSize::Fixed(v) => {
-        //         let buffer_size_range = get_io_buffer_frame_size_range(&audio_unit)?;
-        //         match buffer_size_range {
-        //             SupportedBufferSize::Range { min, max } => {
-        //                 if v >= min && v <= max {
-        //                     audio_unit.set_property(
-        //                         kAudioDevicePropertyBufferFrameSize,
-        //                         scope,
-        //                         element,
-        //                         Some(&v),
-        //                     )?
-        //                 } else {
-        //                     return Err(BuildStreamError::StreamConfigNotSupported);
-        //                 }
-        //             }
-        //             SupportedBufferSize::Unknown => (),
-        //         }
-        //     }
-        //     BufferSize::Default => (),
-        // }
-
-        println!("register callback");
         // Register the callback that is being called by coreaudio whenever it needs data to be
         // fed to the audio buffer.
         let bytes_per_channel = sample_format.sample_size();
@@ -349,7 +313,6 @@ impl DeviceTrait for Device {
         audio_unit.set_render_callback(move |args: Args| unsafe {
             // If `run()` is currently running, then a callback will be available from this list.
             // Otherwise, we just fill the buffer with zeroes and return.
-            // println!("cb");
 
             let AudioBuffer {
                 mNumberChannels: channels,
@@ -363,7 +326,6 @@ impl DeviceTrait for Device {
 
             let callback = match host_time_to_stream_instant(args.time_stamp.mHostTime) {
                 Err(err) => {
-                    println!("doh err");
                     error_callback(err.into());
                     return Err(());
                 }
@@ -382,9 +344,7 @@ impl DeviceTrait for Device {
             Ok(())
         })?;
 
-        println!("start");
         audio_unit.start()?;
-        println!("returning");
 
         Ok(Stream::new(StreamInner {
             playing: true,
@@ -442,18 +402,11 @@ struct StreamInner {
 }
 
 
-// fn buffer_time_step_secs(buffer_size_frames: usize, sample_rate: SampleRate) -> f64 {
-//     buffer_size_frames as f64 / sample_rate.0 as f64
-// }
-
-
 fn create_audio_unit() -> Result<AudioUnit, coreaudio::Error>{
     AudioUnit::new(coreaudio::audio_unit::IOType::RemoteIO)
 }
 
 fn configure_for_recording(audio_unit: &mut AudioUnit) -> Result<(), coreaudio::Error> {
-    println!("Configure audio unit for recording");
-
     // Enable mic recording
     let enable_input = 1u32;
     audio_unit.set_property(

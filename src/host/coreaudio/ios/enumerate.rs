@@ -8,6 +8,7 @@ use super::Device;
 pub type SupportedInputConfigs = ::std::vec::IntoIter<SupportedStreamConfigRange>;
 pub type SupportedOutputConfigs = ::std::vec::IntoIter<SupportedStreamConfigRange>;
 
+// TODO: Support enumerating earpiece vs headset vs speaker etc?
 pub struct Devices(VecIntoIter<Device>);
 
 impl Devices {
@@ -40,4 +41,3 @@ pub fn default_input_device() -> Option<Device> {
 pub fn default_output_device() -> Option<Device> {
     Some(Device)
 }
-
