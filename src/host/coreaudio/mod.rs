@@ -3,24 +3,24 @@ use coreaudio::sys::{
     kAudioFormatLinearPCM, OSStatus,
 };
 
+use ::{BuildStreamError, SupportedStreamConfigsError};
+use DefaultStreamConfigError;
+
 use crate::{BackendSpecificError, SampleFormat, StreamConfig};
 
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-pub use self::macos::enumerate::{Devices, SupportedInputConfigs, SupportedOutputConfigs};
-#[cfg(target_os = "macos")]
 pub use self::macos::{Device, Host, Stream};
+#[cfg(target_os = "macos")]
+pub use self::macos::enumerate::{Devices, SupportedInputConfigs, SupportedOutputConfigs};
 
 #[cfg(target_os = "ios")]
 mod ios;
 #[cfg(target_os = "ios")]
-pub use self::ios::enumerate::{Devices, SupportedInputConfigs, SupportedOutputConfigs};
-#[cfg(target_os = "ios")]
 pub use self::ios::{Device, Host, Stream};
-use ::{BuildStreamError, SupportedStreamConfigsError};
-use DefaultStreamConfigError;
-
+#[cfg(target_os = "ios")]
+pub use self::ios::enumerate::{Devices, SupportedInputConfigs, SupportedOutputConfigs};
 
 /// Common helper methods used by both macOS and iOS
 

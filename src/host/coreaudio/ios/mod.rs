@@ -1,7 +1,4 @@
 use std::cell::RefCell;
-use std::ops::DerefMut;
-use std::ptr::null_mut;
-use std::sync::{Arc, Mutex, RwLock};
 
 use coreaudio::audio_unit::{AudioUnit, Element, render_callback, Scope};
 use coreaudio::audio_unit::render_callback::data;
@@ -10,8 +7,6 @@ use coreaudio::sys::{
     AudioStreamBasicDescription,
     kAudioOutputUnitProperty_EnableIO,
     kAudioUnitProperty_StreamFormat,
-    kAudioUnitType_Output,
-    OSStatus,
 };
 
 use host::coreaudio::{asbd_from_config, host_time_to_stream_instant, frames_to_duration};
@@ -28,6 +23,7 @@ use self::enumerate::{
     default_input_device, default_output_device,
     Devices, SupportedInputConfigs, SupportedOutputConfigs
 };
+use std::slice;
 
 pub mod enumerate;
 
@@ -36,9 +32,9 @@ const MAX_CHANNELS: u16 = 2;
 const MIN_SAMPLE_RATE: SampleRate = SampleRate(44_100);
 const MAX_SAMPLE_RATE: SampleRate = SampleRate(44_100);
 const DEFAULT_SAMPLE_RATE: SampleRate = SampleRate(44_100);
-const MIN_BUFFER_SIZE: u32 = 512;
-const MAX_BUFFER_SIZE: u32 = 512;
-const DEFAULT_BUFFER_SIZE: usize = 512;
+const MIN_BUFFER_SIZE: u32 = 0;
+const MAX_BUFFER_SIZE: u32 = 0;
+// const DEFAULT_BUFFER_SIZE: usize = 512;
 const SUPPORTED_SAMPLE_FORMAT: SampleFormat = SampleFormat::F32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,17 +190,85 @@ impl DeviceTrait for Device {
 
     fn build_input_stream_raw<D, E>(
         &self,
-        _config: &StreamConfig,
-        _sample_format: SampleFormat,
-        _data_callback: D,
-        _error_callback: E,
+        config: &StreamConfig,
+        sample_format: SampleFormat,
+        mut data_callback: D,
+        mut error_callback: E,
     ) -> Result<Self::Stream, BuildStreamError>
         where
             D: FnMut(&Data, &InputCallbackInfo) + Send + 'static,
             E: FnMut(StreamError) + Send + 'static,
     {
-        // TODO
-        Err(BuildStreamError::StreamConfigNotSupported)
+        // The scope and element for working with a device's input stream.
+        let scope = Scope::Output;
+        let element = Element::Input;
+
+        let au_type = coreaudio::audio_unit::IOType::RemoteIO;
+        println!("new audio unit");
+        let mut audio_unit = AudioUnit::new(au_type)?;
+        audio_unit.uninitialize()?;
+        configure_for_recording(&mut audio_unit)?;
+        audio_unit.initialize()?;
+
+        // Set the stream in interleaved mode.
+        let asbd = asbd_from_config(config, sample_format);
+        audio_unit.set_property(kAudioUnitProperty_StreamFormat, scope, element, Some(&asbd))?;
+
+        // Set the buffersize
+        match config.buffer_size {
+            BufferSize::Fixed(_) => {
+                return Err(BuildStreamError::StreamConfigNotSupported);
+            }
+            BufferSize::Default => (),
+        }
+
+        // Register the callback that is being called by coreaudio whenever it needs data to be
+        // fed to the audio buffer.
+        let bytes_per_channel = sample_format.sample_size();
+        let sample_rate = config.sample_rate;
+        type Args = render_callback::Args<data::Raw>;
+        audio_unit.set_input_callback(move |args: Args| unsafe {
+            let ptr = (*args.data.data).mBuffers.as_ptr() as *const AudioBuffer;
+            let len = (*args.data.data).mNumberBuffers as usize;
+            let buffers: &[AudioBuffer] = slice::from_raw_parts(ptr, len);
+
+            // There is only 1 buffer when using interleaved channels
+            let AudioBuffer {
+                mNumberChannels: channels,
+                mDataByteSize: data_byte_size,
+                mData: data,
+            } = buffers[0];
+
+            let data = data as *mut ();
+            let len = (data_byte_size as usize / bytes_per_channel) as usize;
+            let data = Data::from_parts(data, len, sample_format);
+
+            // TODO: Need a better way to get delay, for now we assume a double-buffer offset.
+            let callback = match host_time_to_stream_instant(args.time_stamp.mHostTime) {
+                Err(err) => {
+                    error_callback(err.into());
+                    return Err(());
+                }
+                Ok(cb) => cb,
+            };
+            let buffer_frames = len / channels as usize;
+            let delay = frames_to_duration(buffer_frames, sample_rate);
+            let capture = callback
+                .sub(delay)
+                .expect("`capture` occurs before origin of alsa `StreamInstant`");
+            let timestamp = crate::InputStreamTimestamp { callback, capture };
+
+            let info = InputCallbackInfo { timestamp };
+            data_callback(&data, &info);
+            Ok(())
+        })?;
+
+        audio_unit.start()?;
+
+        Ok(Stream::new(StreamInner {
+            playing: true,
+            audio_unit,
+        }))
     }
 
     /// Create an output stream.
@@ -226,15 +290,16 @@ impl DeviceTrait for Device {
 
         let n_channels = config.channels as usize;
 
-        let buffer_size_frames = match config.buffer_size {
-            BufferSize::Fixed(v) => {
-                if v == 0 {
-                    return Err(BuildStreamError::StreamConfigNotSupported);
-                } else {
-                    v as usize
-                }
+        match config.buffer_size {
+            BufferSize::Fixed(_) => {
+                return Err(BuildStreamError::StreamConfigNotSupported);
+                // if v == 0 {
+                //     return Err(BuildStreamError::StreamConfigNotSupported);
+                // } else {
+                //     v as usize
+                // }
             }
-            BufferSize::Default => DEFAULT_BUFFER_SIZE,
+            BufferSize::Default => (),
         };
         // let buffer_size_samples = buffer_size_frames * n_channels;
         // let buffer_time_step_secs = buffer_time_step_secs(buffer_size_frames, config.sample_rate);
